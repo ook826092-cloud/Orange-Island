@@ -67,24 +67,16 @@ jobs:
           gradle-home-cache-cleanup: true
 
       - if: steps.check.outputs.skip != 'true'
-        name: 恢复签名密钥
-        env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        name: 配置签名密钥（仓库内置 ci-signing）
         run: |
-          if [ -n "$KEYSTORE_BASE64" ]; then
-            echo "$KEYSTORE_BASE64" | base64 -d > ${{ github.workspace }}/release.jks
-            cat >> local.properties <<EOF
-            storeFile=${{ github.workspace }}/release.jks
-            storePassword=$KEYSTORE_PASSWORD
-            keyAlias=$KEY_ALIAS
-            keyPassword=$KEY_PASSWORD
-            EOF
-            echo "✅ 已配置签名密钥"
+          if [ -f ci-signing/release.jks ]; then
+            {
+              echo "storeFile=${{ github.workspace }}/ci-signing/release.jks"
+              cat ci-signing/signing.properties
+            } >> local.properties
+            echo "✅ 使用仓库内置签名密钥（每次构建签名一致，可覆盖安装）"
           else
-            echo "⚠️ 未配置签名密钥，使用 debug 签名"
+            echo "⚠️ 未找到 ci-signing/release.jks，将使用 debug 签名"
           fi
 
       - if: steps.check.outputs.skip != 'true'
