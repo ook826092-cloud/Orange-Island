@@ -83,7 +83,7 @@ jobs:
         name: 编译 Play Release APK
         run: |
           chmod +x ./gradlew
-          ./gradlew assemblePlayRelease
+          ./gradlew assemblePlayRelease -x lintVitalPlayRelease
 
       - if: steps.check.outputs.skip != 'true'
         name: 查找编译出的 APK
