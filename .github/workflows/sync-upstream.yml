@@ -1,0 +1,87 @@
+name: Sync Upstream
+
+# 注意：使用前请将 UPSTREAM_URL 替换为你的上游仓库地址
+# 例如：https://github.com/original-owner/original-repo.git
+
+on:
+  schedule:
+    - cron: '0 16,4 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Fetch upstream
+        env:
+          # ========== 请修改这里 ==========
+          UPSTREAM_URL: ${{ vars.UPSTREAM_URL || 'https://github.com/UPSTREAM_OWNER/UPSTREAM_REPO.git' }}
+          # ================================
+        run: |
+          git remote add upstream "$UPSTREAM_URL" || git remote set-url upstream "$UPSTREAM_URL"
+          git fetch upstream master
+
+      - name: Check for new commits
+        id: check
+        run: |
+          LOCAL=$(git rev-parse HEAD)
+          UPSTREAM=$(git rev-parse upstream/master)
+          echo "local=$LOCAL"
+          echo "upstream=$UPSTREAM"
+          if [ "$LOCAL" = "$UPSTREAM" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "✅ 上游无新提交，跳过本次同步"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "🔄 检测到上游有新提交，开始同步"
+          fi
+
+      - name: Merge upstream/master
+        if: steps.check.outputs.skip == 'false'
+        env:
+          GIT_AUTHOR_NAME: github-actions
+          GIT_AUTHOR_EMAIL: github-actions@github.com
+          GIT_COMMITTER_NAME: github-actions
+          GIT_COMMITTER_EMAIL: github-actions@github.com
+        run: |
+          git config --global user.name "${{ env.GIT_AUTHOR_NAME }}"
+          git config --global user.email "${{ env.GIT_AUTHOR_EMAIL }}"
+          # 合并上游：
+          #  对内容冲突 (modify/modify) 用 -X ours 保留本地版本
+          #  对 modify/delete 冲突（本地删除、上游修改的 .github/workflows/ 文件）保留“本地已删除”的决定
+          if git merge upstream/master --no-edit --no-ff -X ours; then
+            # merge 成功：仅当真的产生了新 merge commit 时才恢复 workflows 并提交
+            if [ "$(git rev-parse HEAD)" != "$(git rev-parse ORIG_HEAD)" ]; then
+              git checkout HEAD^ -- .github/workflows/
+              git commit --amend --no-edit
+              git push origin master
+            else
+              echo "✅ 上游无新提交，本地已是最新，无需同步"
+            fi
+          else
+            # 遍历所有未解决冲突，按冲突类型处理
+            for f in $(git diff --name-only --diff-filter=U); do
+              case "$f" in
+                # 本地已删除、上游有修改 -> 保留删除（本仓库不再使用这些文件）
+                .github/workflows/*) git rm -f "$f" ;;
+                # 其余（如 README.md）本地有内容 -> 保留本地版本
+                *) git checkout --ours "$f" && git add "$f" ;;
+              esac
+            done
+            # modify/delete 冲突的 .github/workflows 文件上一步已 git rm；再确保提交时无未合并残留
+            if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
+              echo "❌ 仍有未解决冲突"
+              git status --short
+              exit 1
+            fi
+            git commit --no-edit
+            git push origin master
+          fi

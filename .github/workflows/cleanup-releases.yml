@@ -1,0 +1,52 @@
+name: 清理过期构建 Release
+
+on:
+  schedule:
+    - cron: '30 3 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: 删除 14 天前的 build-* prerelease（保留最新 5 个）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, subprocess, datetime
+
+          repo = os.environ['GITHUB_REPOSITORY']
+
+          def gh(*args):
+              return subprocess.run(['gh', 'api', *args], capture_output=True, text=True, check=True).stdout
+
+          releases = json.loads(gh('--paginate', f'repos/{repo}/releases?per_page=100'))
+          builds = [r for r in releases if r.get('prerelease') and r.get('tag_name', '').startswith('build-')]
+          builds.sort(key=lambda r: r['created_at'], reverse=True)
+
+          cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=14)
+          to_delete = [
+              r for r in builds[5:]
+              if datetime.datetime.fromisoformat(r['created_at'].replace('Z', '+00:00')) < cutoff
+          ]
+
+          print(f'共 {len(builds)} 个 build-* release，保留最新 {len(builds) - len(to_delete)} 个，删除 {len(to_delete)} 个')
+          for r in to_delete:
+              tag = r['tag_name']
+              print(f'删除 release {tag} (id={r["id"]})')
+              gh('-X', 'DELETE', f'repos/{repo}/releases/{r["id"]}')
+              try:
+                  gh('-X', 'DELETE', f'repos/{repo}/git/refs/tags/{tag}')
+              except subprocess.CalledProcessError:
+                  print(f'  tag {tag} 删除失败或不存在，忽略')
+          print('清理完成')
+          EOF
