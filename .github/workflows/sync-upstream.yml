@@ -1,0 +1,73 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    - cron: '0 16,4 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: orange-sync-upstream
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/chloemeadow0-code/Orange-Island.git
+          git fetch upstream master
+
+      - name: Check for new commits
+        id: check
+        run: |
+          LOCAL=$(git rev-parse HEAD)
+          UPSTREAM=$(git rev-parse upstream/master)
+          echo "local=$LOCAL"
+          echo "upstream=$UPSTREAM"
+          if [ "$LOCAL" = "$UPSTREAM" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "✅ 上游无新提交，跳过本次同步"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "🔄 检测到上游有新提交，开始同步"
+          fi
+
+      - name: Merge upstream/master
+        if: steps.check.outputs.skip == 'false'
+        env:
+          GIT_AUTHOR_NAME: github-actions
+          GIT_AUTHOR_EMAIL: github-actions@github.com
+          GIT_COMMITTER_NAME: github-actions
+          GIT_COMMITTER_EMAIL: github-actions@github.com
+        run: |
+          git config --global user.name "${{ env.GIT_AUTHOR_NAME }}"
+          git config --global user.email "${{ env.GIT_AUTHOR_EMAIL }}"
+          # 有内容冲突时优先保留本地（本仓库自定义文件不被上游覆盖）
+          if git merge upstream/master --no-edit --no-ff -X ours; then
+            if [ "$(git rev-parse HEAD)" != "$(git rev-parse ORIG_HEAD)" ]; then
+              git push origin master
+            else
+              echo "✅ 上游无新提交，本地已是最新，无需同步"
+            fi
+          else
+            # 未解决冲突：.github/workflows/ 与 README 等本地文件保留本地，其余报错暴露
+            for f in $(git diff --name-only --diff-filter=U); do
+              case "$f" in
+                .github/workflows/* | README.md | README_CN.md) git checkout --ours "$f" && git add "$f" ;;
+                *) echo "❌ 未预期冲突: $f"; exit 1 ;;
+              esac
+            done
+            git commit --no-edit
+            git push origin master
+          fi
